@@ -1,0 +1,28 @@
+# --- environment ---------------------------------------------------------
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# --- confidential source document ----------------------------------------
+# The benchmark was built from a private fund-board report. Neither the PDF
+# nor anything derived from it is published.
+*.pdf
+*.png
+*.jpg
+
+# --- artifacts that REPRODUCE the source text verbatim -------------------
+# These are code output, but their content is the confidential document:
+#   gold/pages/*.json  ~3,200 words of the source text, plus every table value
+#   runs/**/*.json     the same text again, as parsed by each parser
+#   results/*.json     per-block scoring detail, including text snippets
+# Excluding only the PDF and images would still publish all of it.
+gold/pages/
+runs/
+results/*.json
+
+# Text literals that cannot be derived from geometry (chart labels transcribed
+# from the bitmap, bold run-in spans, publisher name). These are the document's
+# content, so the builders read them from here rather than hardcoding them.
+# See tools/page_literals.example.json for the shape.
+tools/page_literals.json

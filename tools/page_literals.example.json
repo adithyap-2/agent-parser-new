@@ -1,0 +1,51 @@
+{
+ "p13": {
+  "data_labels": [
+   "AAAA",
+   "BBBB",
+   "Example Long Label"
+  ]
+ },
+ "p22": {
+  "bold_spans": {
+   "heading": [
+    "SECTION TITLE"
+   ],
+   "paras": [
+    [
+     "Run-in Label:"
+    ],
+    [],
+    [],
+    [],
+    [
+     "Another Label:"
+    ],
+    [],
+    [
+     "Label A:",
+     "Label B:"
+    ],
+    [
+     "Label C:"
+    ],
+    [
+     "Label D:"
+    ],
+    [
+     "Label E:"
+    ]
+   ]
+  }
+ },
+ "p27": {
+  "headings": [
+   "First Fund Name",
+   "Second Fund Name"
+  ]
+ },
+ "logo": {
+  "description": "publisher logo",
+  "text_in_image": "publisher name"
+ }
+}
