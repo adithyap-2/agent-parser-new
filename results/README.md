@@ -1,124 +1,143 @@
-# Results — PyMuPDF vs MinerU
+# Results — PyMuPDF vs MinerU vs Docling
 
 Normalisation **L1**. Reproduce with:
 
 ```bash
 .venv/bin/python adapters/run_pymupdf.py
-# MinerU runs in its own env (torch has no Python 3.14 wheels):
+
+# MinerU and Docling each need their own env (torch has no Python 3.14 wheels):
 MINERU_MODEL_SOURCE=modelscope /opt/anaconda3/envs/mineru/bin/mineru \
     -p benchmark/benchmark-5page.pdf -o /tmp/mineru_out -b pipeline -m txt
 .venv/bin/python adapters/run_mineru.py
-.venv/bin/python bench/compare.py runs/pymupdf runs/mineru
+
+/opt/anaconda3/envs/docling/bin/python adapters/run_docling.py
+
+.venv/bin/python bench/compare.py runs/pymupdf runs/mineru runs/docling
 ```
 
 | parser | version | how |
 |---|---|---|
 | PyMuPDF | 1.28.2 | text layer + `find_tables()`; baseline |
-| MinerU | 3.4.5 | `pipeline` backend, `-m txt`, CPU (ModelScope weights) |
+| MinerU | 3.4.5 | `pipeline` backend, `-m txt`, CPU |
+| Docling | 2.127.0 | default pipeline, CPU, RapidOCR enabled (~2 min for 5 pages) |
 
 ## Overall
 
 | parser | composite |
 |---|---|
 | PyMuPDF | 0.738 |
-| **MinerU** | **0.741** |
+| MinerU | 0.741 |
+| **Docling** | **0.909** |
 
-The single number is a near-tie and is the least useful thing here — the two
-parsers fail in completely different places. Read the tracks.
+Docling wins, and unlike the PyMuPDF/MinerU near-tie this margin is real: it
+leads on **every** track, not on an average that hides a trade-off.
 
 ## By track
 
 | parser | text | structure | table | chart_data | furniture |
 |---|---|---|---|---|---|
-| PyMuPDF | **0.888** | **0.881** | 0.537 | 0.000 | 0.800 |
-| MinerU | 0.849 | 0.821 | **0.711** | 0.000 | **1.000** |
+| PyMuPDF | 0.888 | 0.881 | 0.537 | 0.000 | 0.800 |
+| MinerU | 0.849 | 0.821 | 0.711 | 0.000 | 1.000 |
+| **Docling** | **0.984** | **0.933** | **0.944** | **0.479** | **1.000** |
 
 ## By page (composite)
 
 | parser | p04 table | p13 chart | p22 prose | p27 mixed | p30 lists |
 |---|---|---|---|---|---|
-| PyMuPDF | **0.820** | **0.337** | **1.000** | 0.601 | **0.934** |
-| MinerU | 0.641 | 0.243 | 0.996 | **0.923** | 0.903 |
+| PyMuPDF | 0.820 | 0.337 | 1.000 | 0.601 | 0.934 |
+| MinerU | 0.641 | 0.243 | 0.996 | 0.923 | 0.903 |
+| Docling | 0.947 | 0.647 | 0.999 | 0.974 | 0.979 |
 
 ### table track, per page
 
-| parser | p04 | p27 |
+| parser | p04 (14 cols, ragged header) | p27 (unruled sub-columns) |
 |---|---|---|
-| PyMuPDF | **0.743** | 0.332 |
-| MinerU | 0.525 | **0.896** |
+| PyMuPDF | 0.743 | 0.332 |
+| MinerU | 0.525 | 0.896 |
+| Docling | **0.919** | **0.969** |
 
-## What actually happened
+## What happened
 
-**Neither parser reads the chart.** Both score 0.000 on `chart_data`. p13's plot
-is a single bitmap, and neither tool attempts chart-data extraction — MinerU's
-pipeline backend detects the region and crops it to an image, nothing more. This
-is the benchmark's designed discriminator and it currently separates nobody;
-it will only move with a VLM backend.
+**Docling is the first parser to read the chart.** `chart_data` 0.479 against
+0.000 for both others — it recovered **44 of 52** bubble labels by OCR
+(precision 0.90, recall 0.85, F1 0.87). All 8 "misses" are really OCR merges of
+adjacent labels — two tickers run together as one token, three fused without a
+separator, and a long fund name absorbed into the ticker beside it. The
+characters were read; the token boundaries were not.
 
-**PyMuPDF wins the unruled table, MinerU wins the ruled one.** The reversal on
-the table track is the most interesting result:
+The score is 0.479 rather than 0.87 because labels are only 55% of the track.
+Docling scores **0** on mark count, colour distribution and axis labels — it
+read the *text* in the bitmap but did no chart *understanding*: no bubbles
+counted, no axis semantics. It even OCR'd the axis title
+("Total Net Expense Percentile\*\*") but emitted it as a page heading, with no
+notion that it labels an axis. That is the honest split, and it is exactly the
+distinction the track was built to expose.
 
-- *p27*: PyMuPDF detects only the 4 **ruled** column groups and collapses each
-  group's three unruled sub-columns into one cell — `'2.42 0.10 4.26'` instead
-  of three values. Shape `[12,4]` against gold's `[15,8]`, `cell_bag_f1` 0.26.
-  MinerU's table model recovers the grid **exactly** — `[15,8]`, `grits_con`
-  0.99 — including `rowspan=2` on *Fund* and `colspan=3` on *Total Return*.
-- *p04*: the reverse. PyMuPDF's ruled-grid detector gets the 14 columns right
-  (`grits_con` 0.95) but emits no spans at all (`header_f1` 0.17). MinerU
-  over-segments the wide table into **25 columns** against gold's 14
-  (`grits_con` 0.68) — though `cell_bag_f1` 0.97 shows it *read* nearly every
-  value, then placed them in the wrong grid.
+**Docling resolves both table traps that split the other two.** PyMuPDF and
+MinerU each won one page and lost the other; Docling gets both:
 
-So: PyMuPDF is bounded by needing ruled lines; MinerU's learned model handles
-unruled structure well but destabilises on a very wide table.
+- *p04* — grid exactly right (`[29,14]`), `grits_con` **1.00**. MinerU
+  over-segmented this into 25 columns; PyMuPDF got the columns but emitted no
+  spans at all.
+- *p27* — both tables exact (`[15,8]`, `[14,8]`), `grits_con` 0.99. PyMuPDF
+  collapsed the unruled sub-columns here into `[12,4]`.
 
-**PyMuPDF's p13 score is pure reading order.** `cer` 0.465 with `cer_aligned`
-0.000 — every character correct, the two-column footer interleaved. MinerU's
-p13 is the opposite failure: `cer` 0.701 with `order_penalty` 0.000, because it
-**discarded** three footnotes and the *KEY* heading as page furniture. Same
-track, same rough score, opposite causes — visible only because the text track
-decomposes.
+Its remaining table gap is header spans: `header_f1` 0.68 on p04, 0.91 on p27 —
+it gets the grid right but not every merged header cell.
 
-**MinerU discards more.** It classified p04's red banner and several body
-elements as furniture. That gives it a perfect 1.000 on the opt-in `furniture`
-track and costs it on `structure` (p04 type accuracy 0.50). PyMuPDF keeps
-everything and instead emits spurious blocks (9 on p13, 7 on p27).
+**Where Docling still loses points:** p13 structure, 0.738. It splits the KEY
+legend into **12 blocks**, breaking each entry at the bold colour name
+("Green" / ": Fund is better than median…"). Gold has one list of 5 items.
+That is genuine over-segmentation on bold run-in labels — the same behaviour
+the p22 `Characteristics:` trap targets — and it is why p13's `block_detection_f1`
+is 0.41 with 15 spurious blocks despite near-perfect text.
 
-**p22 is solved.** Both parsers are ~1.000 on 1,560 words of dense prose. Plain
-text extraction is not where these tools differ.
+**Text is close to solved for all three on prose.** p22 is ~1.000 for everyone.
+The parsers separate on structure and tables, not on reading running text.
 
-## Three scoring bugs this run exposed
+## Five scoring/adapter bugs this project exposed
 
-All three inflated or deflated scores for reasons that had nothing to do with
-parser quality. Fixed, with calibration still at 26/26.
+Each inflated or deflated scores for reasons unrelated to parser quality.
+Calibration stayed at 26/26 after every fix.
 
-1. **Table text wasn't credited.** Gold puts table content on the text track; a
-   parser emitting a table as `structure` with no `text` field got zero for it.
-   PyMuPDF's p04 text score was 0.005 before the fix, 1.000 after.
-2. **`is_header` punished a format, not a parser.** MinerU emits table HTML with
-   `<td>` throughout and no `<th>`/`<thead>`, so every header comparison scored
-   0 despite the spans being right. `infer_headers()` now marks the top N rows
-   positionally when a parser flags none. MinerU's p27 table: 0.711 → **0.896**.
-3. **My own adapter invented a reading-order error.** Appending MinerU's
-   `discarded_blocks` at the end of the block list put p04's page heading after
-   the table, driving reading-order τ to 0.00. Placing them by bbox instead
-   gives MinerU **τ = 1.00 on all five pages** — its reading order was perfect
-   the whole time. MinerU overall: 0.702 → **0.741**.
+1. **Table text uncredited** — gold puts table content on the text track; a
+   parser emitting `structure` with no `text` scored 0 for it. PyMuPDF p04:
+   0.005 → 1.000.
+2. **`is_header` punished a format** — MinerU emits `<td>` with no `<th>`, so
+   header comparisons scored 0 despite correct spans. Now inferred
+   positionally. MinerU p27 table: 0.711 → 0.896.
+3. **MinerU adapter invented a reading-order error** — appending
+   `discarded_blocks` at the end put p04's heading after the table, forcing
+   τ to 0.00. Placing them by bbox gives MinerU τ = 1.00 on all five pages.
+   Overall 0.702 → 0.741, which *flipped the ranking* against PyMuPDF.
+4. **Docling adapter dropped all furniture** — `iterate_items()` walks only
+   `doc.body`, and Docling holds `page_header`/`page_footer` outside it. It had
+   detected 3 headers and 9 footers; the adapter saw none. Furniture 0.000 →
+   1.000.
+5. **Docling adapter threw away the chart** — `iterate_items()` does not
+   descend into pictures, so the OCR text nested in the chart element was
+   invisible. This was worth the whole chart track: overall 0.863 → 0.909,
+   p13 0.415 → 0.647.
 
-The third is worth dwelling on: it changed the headline ranking. Before the fix
-PyMuPDF appeared to win 0.738 to 0.702; after it, the two are level. An adapter
-bug is indistinguishable from a parser weakness unless you look at the
-sub-metrics, which is the argument for keeping them.
+Bugs 3–5 are the same lesson in three costumes: **the adapter decides what the
+parser appears to be capable of.** Two of them made a parser look strictly worse
+than it is, and one changed which parser came first. Sub-metrics are what made
+them findable.
 
 ## Caveats
 
-- **n=5.** A 0.003 gap in the composite is noise. These results characterise
-  failure modes; they do not rank the tools.
-- **MinerU ran on CPU with the `pipeline` backend.** Its `vlm-engine` /
-  `hybrid-engine` backends are the accurate ones and would likely change the
-  chart and wide-table results. This is a floor for MinerU, not its ceiling.
-- **Weights are a judgement** (`PAGE_WEIGHTS` in `bench/score.py`). p04's
-  composite is 65% table, so MinerU's column over-segmentation dominates that
-  page's number.
-- **No positional scoring** — blocks are matched by text, so neither parser is
-  assessed on bbox accuracy.
+- **n=5.** Docling's 0.17 lead over the other two is well outside noise at this
+  size, but the PyMuPDF/MinerU gap of 0.003 is meaningless. These results
+  characterise failure modes; only the large gaps rank tools.
+- **MinerU ran CPU-only on `pipeline`.** Its `vlm-engine` / `hybrid-engine`
+  backends are the accurate ones and would likely change both the chart and
+  wide-table results. This is MinerU's floor, not its ceiling.
+- **Docling's chart score depends on an adapter decision.** The OCR strings are
+  Docling's, but grouping them into `data_labels` is the adapter's doing;
+  pure numeric/percent tokens were filtered as axis ticks by a generic rule
+  (not derived from gold). A naive Docling integration that only walks
+  `iterate_items()` would score 0.000 here.
+- **Weights are a judgement** (`PAGE_WEIGHTS` in `bench/score.py`); p04 is 65%
+  table, so table handling dominates that page.
+- **No positional scoring** — blocks are matched by text, so bbox accuracy is
+  not assessed.
